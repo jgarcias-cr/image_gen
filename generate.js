@@ -1,7 +1,6 @@
 import { GoogleGenAI, Modality } from "@google/genai";
 import * as fs from "node:fs";
 import * as path from "node:path";
-// Load .env (if present) so we can read SERIAL
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -10,8 +9,6 @@ const SERIAL = process.env.SERIAL || '';
 // If a GEMINI_API_KEY is present in .env, expose it as GOOGLE_API_KEY (some clients/readers expect that)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 if (GEMINI_API_KEY) {
-   // Do not print the key value itself for security, only indicate presence
-   console.log('GEMINI_API_KEY found in environment — using API key auth for local runs');
    // Some libraries and tools look for GOOGLE_API_KEY; set it to improve compatibility
    process.env.GOOGLE_API_KEY = GEMINI_API_KEY;
 }
@@ -19,20 +16,30 @@ if (GEMINI_API_KEY) {
 // Define los prompts (ahora objetos con prompt y filename) y la carpeta de destino
 // filename can include a {timestamp} placeholder which will be replaced with Date.now().
 const IMAGE_PROMPTS = [
-   { prompt: "Una regla para medir", filename: "regla.jpg" },
-   // { prompt: "Un borrador para pizarra", filename: "borrador.jpg" },
-   // { prompt: "Un marcador para pizarra", filename: "marcador.jpg" },
-   // { prompt: "Un maestro de primaria frente a su clase", filename: "maestro.jpg" },
-   // { prompt: "Estudiantes sentados en sus pupitres", filename: "estudiantes.jpg" },
-   // { prompt: "Una aula", filename: "aula.jpg" },
-   // { prompt: "Una pizarra blanca", filename: "pizarra.jpg" },
-   // { prompt: "Una persona leyendo un libro", filename: "leer" },
-   // { prompt: "Dos personas leyendo un rótulo", filename: "leen" },
-   // { prompt: "Varias personas leyendo un anuncio", filename: "leemos.jpg" },
+   { prompt: "Una persona despertando en su cama en la mañana", filename: "despertar" },
+   { prompt: "Una persona levantandose de la cama", filename: "levantar" },
+   { prompt: "Una persona tomando una ducha", filename: "duchar" },
+   { prompt: "Una persona vistiendose", filename: "vestir" },
+   { prompt: "Una persona desayunando en casa", filename: "desayunar" },
+   { prompt: "Una persona trabajando", filename: "trabajar" },
+   { prompt: "Una persona durmiendo en su cama", filename: "dormir" },
+   { prompt: "Una persona que corre para ejercitarse", filename: "correr" },
+   { prompt: "Una persona descansando", filename: "descansar" },
+   { prompt: "Una persona amasando pan", filename: "hacer" },
+   { prompt: "Una persona bebiendo agua del grifo", filename: "beber" },
+   { prompt: "Una persona que tiene una idea", filename: "saber" },
 ];
 const OUTPUT_DIR = path.join(process.cwd(), 'images');
 const MODEL_NAME = "gemini-2.5-flash-image"; // Modelo que soporta salida de imágenes
-
+// Enforced style + constraints for every generated image
+const ENFORCED_STYLE = 'Retro Comic Book Illustration';
+// Spanish constraints: no borders/frames, light solid background, no textures/gradients/text
+// Also enforce required output dimensions: width=495px, height=750px
+const TARGET_WIDTH = 495;
+const TARGET_HEIGHT = 750;
+const ENFORCED_CONSTRAINTS = `Sin bordes ni marcos. Fondo de color sólido claro (por ejemplo #F7F7F7). Sin texturas, degradados ni elementos adicionales. Sin texto ni marcas de agua. Tamaño requerido: ${TARGET_WIDTH}px de ancho por ${TARGET_HEIGHT}px de alto.`;
+// Background color to use when compositing alpha channels (light solid color)
+const LIGHT_BG = '#F7F7F7';
 /**
  * Genera imágenes usando la API de Gemini y las guarda localmente.
  */
@@ -57,13 +64,16 @@ async function generateAndSaveImages() {
       const requestedFilename = typeof entry === 'string' ? null : entry.filename;
       // Append the enforced style to the prompt so every image uses it
       const prompt = `${basePrompt} -- Estilo: "${ENFORCED_STYLE}"`;
-      console.log(`\n-- Procesando prompt ${i + 1}/${IMAGE_PROMPTS.length}: "${prompt}"`);
+      console.log(`\n-- Procesando prompt ${i + 1}/${IMAGE_PROMPTS.length}: "${entry.prompt}"`);
 
       try {
          // 2. Llama a la API para generar contenido, pidiendo texto e imagen
+         // Append enforced style and constraints to the user prompt so every image follows them
+         const fullPrompt = `${prompt}. ${ENFORCED_CONSTRAINTS}`;
+
          const response = await ai.models.generateContent({
             model: MODEL_NAME,
-            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            contents: [{ role: "user", parts: [{ text: fullPrompt }] }],
             config: {
                // Es crucial pedir ambas modalidades para obtener la imagen Base64
                responseModalities: [Modality.TEXT, Modality.IMAGE],
@@ -71,9 +81,39 @@ async function generateAndSaveImages() {
          });
 
          // 3. Extrae la imagen Base64 de la respuesta
-         const imagePart = response.candidates[0]?.content.parts.find(
-            (part) => part.inlineData?.mimeType.startsWith('image/')
+         // First, try the expected location
+         let imagePart = response.candidates?.[0]?.content?.parts?.find(
+            (part) => part.inlineData?.mimeType?.startsWith('image/')
          );
+
+         // If not found, perform a shallow recursive search through the response to locate any
+         // object that contains inlineData.mimeType starting with 'image/' (helps with API shape differences)
+         if (!imagePart) {
+            const findImagePart = (node, depth = 0) => {
+               if (!node || depth > 8) return null;
+               if (Array.isArray(node)) {
+                  for (const item of node) {
+                     const res = findImagePart(item, depth + 1);
+                     if (res) return res;
+                  }
+               } else if (typeof node === 'object') {
+                  if (node.inlineData && typeof node.inlineData.mimeType === 'string' && node.inlineData.mimeType.startsWith('image/')) {
+                     return node;
+                  }
+                  for (const key of Object.keys(node)) {
+                     try {
+                        const res = findImagePart(node[key], depth + 1);
+                        if (res) return res;
+                     } catch (e) {
+                        // ignore traversal errors for unexpected structures
+                     }
+                  }
+               }
+               return null;
+            };
+
+            imagePart = findImagePart(response);
+         }
 
          if (imagePart && imagePart.inlineData) {
             const base64Data = imagePart.inlineData.data;
@@ -82,10 +122,17 @@ async function generateAndSaveImages() {
             const imgBuffer = Buffer.from(base64Data, 'base64');
 
             // Convert to JPEG using sharp to ensure .jpg output regardless of returned mime
+            // Flatten any alpha channel onto LIGHT_BG to guarantee a light solid background and no transparency
             import('sharp').then(sharpModule => {
                const sharp = sharpModule.default;
 
                sharp(imgBuffer)
+                  // Ensure final output exactly matches required dimensions.
+                  // Use 'contain' so the whole image fits within the target box. This will
+                  // letterbox/pillarbox with LIGHT_BG rather than cropping important content.
+                  .resize(TARGET_WIDTH, TARGET_HEIGHT, { fit: 'contain', position: 'centre', background: LIGHT_BG })
+                  // If there's an alpha channel, flatten it onto the light solid background.
+                  .flatten({ background: LIGHT_BG })
                   .jpeg({ quality: 90 })
                   .toBuffer()
                   .then((jpegBuffer) => {
@@ -114,20 +161,40 @@ async function generateAndSaveImages() {
                      const filePath = path.join(OUTPUT_DIR, fileName);
 
                      fs.writeFileSync(filePath, jpegBuffer);
-                     console.log(`✅ Imagen guardada en: ${filePath}`);
+                     // Use ASCII-friendly indicator to avoid Unicode/emoji display issues in some consoles
+                     console.log('[OK] Imagen guardada en:', filePath);
                   })
                   .catch((err) => {
-                     console.error('❌ Error al convertir la imagen a JPEG:', err.message || err);
+                     console.error('- Error al convertir la imagen a JPEG:', err.message || err);
                   });
             }).catch(err => {
-               console.error('❌ No se pudo cargar sharp para conversión de imagen:', err.message || err);
+               console.error('- No se pudo cargar sharp para conversión de imagen:', err.message || err);
             });
          } else {
-            console.warn(`❌ No se encontró la imagen en la respuesta para el prompt: "${prompt}"`);
+            // Provide more detailed logging to help debug API response structure without dumping base64
+            const candidateCount = response.candidates ? response.candidates.length : 0;
+            const candidateSummaries = response.candidates?.map((c, idx) => {
+               const parts = c?.content?.parts;
+               return {
+                  candidateIndex: idx,
+                  partsCount: parts?.length ?? 0,
+                  parts: parts?.map((p) => ({
+                     textPreview: typeof p.text === 'string' ? p.text.slice(0, 120) : undefined,
+                     mimeType: p.inlineData?.mimeType,
+                     dataLength: p.inlineData?.data ? (p.inlineData.data.length || null) : null
+                  })) ?? []
+               };
+            }) ?? [];
+
+            console.warn(`- No se encontró la imagen en la respuesta para el prompt: "${prompt}". candidates=${candidateCount}`);
+            console.debug('Response summary (no base64 included):', JSON.stringify({ topKeys: Object.keys(response || {}).slice(0, 20), candidateSummaries }, null, 2));
+
+            // Helpful hint for users: ensure the model supports image modality and that responseModalities included Modality.IMAGE
+            console.info('Sugerencia: confirme que el modelo soporta salida de imágenes y que la llamada pidió Modality.IMAGE en responseModalities.');
          }
 
       } catch (error) {
-         console.error(`❌ Error al generar la imagen para el prompt "${prompt}":`, error.message);
+         console.error(`- Error al generar la imagen para el prompt "${prompt}":`, error.message);
       }
    }
    console.log("\nProceso de generación de imágenes finalizado.");
