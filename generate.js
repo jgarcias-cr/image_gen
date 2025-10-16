@@ -4,8 +4,6 @@ import * as path from "node:path";
 import dotenv from 'dotenv';
 dotenv.config();
 
-// Read SERIAL from environment; fallback to empty string if missing
-const SERIAL = process.env.SERIAL || '';
 // If a GEMINI_API_KEY is present in .env, expose it as GOOGLE_API_KEY (some clients/readers expect that)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 if (GEMINI_API_KEY) {
@@ -16,19 +14,10 @@ if (GEMINI_API_KEY) {
 // Define los prompts (ahora objetos con prompt y filename) y la carpeta de destino
 // filename can include a {timestamp} placeholder which will be replaced with Date.now().
 const IMAGE_PROMPTS = [
-   { prompt: "Una persona despertando en su cama en la mañana", filename: "despertar" },
-   { prompt: "Una persona levantandose de la cama", filename: "levantar" },
-   { prompt: "Una persona tomando una ducha", filename: "duchar" },
-   { prompt: "Una persona vistiendose", filename: "vestir" },
-   { prompt: "Una persona desayunando en casa", filename: "desayunar" },
-   { prompt: "Una persona trabajando", filename: "trabajar" },
-   { prompt: "Una persona durmiendo en su cama", filename: "dormir" },
-   { prompt: "Una persona que corre para ejercitarse", filename: "correr" },
-   { prompt: "Una persona descansando", filename: "descansar" },
-   { prompt: "Una persona amasando pan", filename: "hacer" },
-   { prompt: "Una persona bebiendo agua del grifo", filename: "beber" },
-   { prompt: "Una persona que tiene una idea", filename: "saber" },
+   { prompt: "", filename: "" },
+   { prompt: "", filename: "" },
 ];
+
 const OUTPUT_DIR = path.join(process.cwd(), 'images');
 const MODEL_NAME = "gemini-2.5-flash-image"; // Modelo que soporta salida de imágenes
 // Enforced style + constraints for every generated image
@@ -40,6 +29,7 @@ const TARGET_HEIGHT = 750;
 const ENFORCED_CONSTRAINTS = `Sin bordes ni marcos. Fondo de color sólido claro (por ejemplo #F7F7F7). Sin texturas, degradados ni elementos adicionales. Sin texto ni marcas de agua. Tamaño requerido: ${TARGET_WIDTH}px de ancho por ${TARGET_HEIGHT}px de alto.`;
 // Background color to use when compositing alpha channels (light solid color)
 const LIGHT_BG = '#F7F7F7';
+
 /**
  * Genera imágenes usando la API de Gemini y las guarda localmente.
  */
@@ -137,8 +127,6 @@ async function generateAndSaveImages() {
                   .toBuffer()
                   .then((jpegBuffer) => {
                      // Determine filename. If user provided one, honor it but enforce .jpg and allow {timestamp}.
-                     const serialSegment = SERIAL ? `${SERIAL}_` : '';
-
                      let fileName;
                      if (requestedFilename) {
                         // Replace timestamp placeholder if present
@@ -150,12 +138,9 @@ async function generateAndSaveImages() {
                            // remove existing extension if any, then add .jpg
                            fileName = fileName.replace(/\.[^.]+$/, '') + '.jpg';
                         }
-                        // Prepend serial if provided and not already part of the filename
-                        if (SERIAL && !fileName.startsWith(`${SERIAL}_`)) {
-                           fileName = `${SERIAL}_${fileName}`;
-                        }
                      } else {
-                        fileName = `image_${i + 1}_${serialSegment}${Date.now()}.jpg`;
+                        // Default filename: image_<index>_<timestamp>.jpg
+                        fileName = `image_${i + 1}_${Date.now()}.jpg`;
                      }
 
                      const filePath = path.join(OUTPUT_DIR, fileName);
